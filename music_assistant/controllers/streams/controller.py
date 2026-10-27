@@ -96,6 +96,8 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_PORT,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_LEAD_OUT_SECONDS,
+    FLOW_STREAM_RESUME_MIN_SECONDS,
+    FLOW_STREAM_RESUME_WAIT_SECONDS,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
     PacingProfile,
@@ -145,7 +147,7 @@ from music_assistant.providers.universal_group.player import UniversalGroupPlaye
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player import PlayerMedia
-    from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -1421,7 +1423,9 @@ class StreamsController(CoreController):
             )
             raise web.HTTPNotFound(reason=f"Flow stream already finished: {session_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
-        start_queue_item = self._get_flow_start_item(queue, start_queue_item_id)
+        start_queue_item, play_log = await self._get_flow_start_point(
+            queue, session_id, start_queue_item_id
+        )
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
@@ -1529,6 +1533,7 @@ class StreamsController(CoreController):
             session_id=session_id,
             protocol_player=player,
             consumer_connected=lambda: request.transport is not None,
+            play_log=play_log,
         )
         if mix_overlay:
             flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)
@@ -2475,6 +2480,89 @@ class StreamsController(CoreController):
             # or restarts its stream: it continues at the item that plays now
             queue_item_id = queue.current_item.queue_item_id
         return self.mass.player_queues.get_item(queue.queue_id, queue_item_id)
+
+    async def _get_flow_start_point(
+        self, queue: PlayerQueue, session_id: str, queue_item_id: str
+    ) -> tuple[QueueItem | None, list[PlayLogEntry] | None]:
+        """
+        Return the item a flow stream request starts at, and the play log it carries on.
+
+        :param queue: The queue to stream.
+        :param session_id: The session the stream is requested for.
+        :param queue_item_id: The item the session started at.
+        """
+        if resume_point := await self._get_flow_resume_point(queue, session_id):
+            return resume_point
+        return self._get_flow_start_item(queue, queue_item_id), None
+
+    async def _get_flow_resume_point(
+        self, queue: PlayerQueue, session_id: str
+    ) -> tuple[QueueItem, list[PlayLogEntry]] | None:
+        """
+        Return where a player that reconnects to its flow stream continues, if it does.
+
+        The player keeps playing what it already buffered and keeps counting its elapsed
+        time from the start of the session, so the new stream picks up the item the previous
+        one was streaming at the point it got to, and carries on the session's play log.
+
+        :param queue: The queue whose flow stream is opened again.
+        :param session_id: The session the stream is opened for.
+        :return: The item to continue, its streamdetails seeked to the point to continue
+            from, with the play log to continue; None when the stream starts afresh.
+        """
+        queue_data = self.mass.player_queues.queue_data(queue.queue_id)
+        if not queue_data.flow_mode_stream_log:
+            return None
+        deadline = asyncio.get_running_loop().time() + FLOW_STREAM_RESUME_WAIT_SECONDS
+        while previous := [
+            request
+            for entry_session_id, request in self._open_item_streams.get(queue.queue_id) or []
+            if entry_session_id == session_id
+        ]:
+            if any(request.transport is not None for request in previous):
+                # still connected: a second stream next to the first, not a reconnect
+                return None
+            if asyncio.get_running_loop().time() >= deadline:
+                return None
+            # the player asks again the moment it hangs up, while the stream it left
+            # is still recording how far it got
+            await asyncio.sleep(0.05)
+        flow_log = queue_data.flow_mode_stream_log
+        last_entry = flow_log[-1]
+        if last_entry.seconds_streamed is None:
+            # nothing recorded how far the previous stream got
+            return None
+        queue_item = self.mass.player_queues.get_item(queue.queue_id, last_entry.queue_item_id)
+        if (
+            queue_item is None
+            or queue_item.streamdetails is None
+            or queue_item.streamdetails.stream_error
+        ):
+            return None
+        play_log = list(flow_log)
+        # an entry that did not record where it started began at the item's latest seek
+        seek_position = int(
+            last_entry.seek_position
+            if last_entry.seek_position is not None
+            else queue_item.streamdetails.seek_position
+        )
+        if last_entry.seconds_streamed < FLOW_STREAM_RESUME_MIN_SECONDS:
+            # a probe, or a stream that had only just started this item: stream it again
+            play_log.pop()
+        else:
+            playback_speed = float(queue_item.extra_attributes.get("playback_speed") or 1.0)
+            seek_position += int(last_entry.seconds_streamed * playback_speed)
+        duration = queue_item.streamdetails.duration
+        if duration and seek_position >= duration:
+            return None
+        self.logger.debug(
+            "Player reconnected to the flow stream of queue %s - continuing %s at %ss",
+            queue.display_name,
+            queue_item.name,
+            seek_position,
+        )
+        queue_item.streamdetails.seek_position = seek_position
+        return queue_item, play_log
 
     async def _finish_flow_stream(
         self, resp: web.StreamResponse, queue_id: str, session_id: str

@@ -2478,6 +2478,7 @@ class StreamsAudio:
         session_id: str | None = None,
         protocol_player: Player | None = None,
         consumer_connected: Callable[[], bool] | None = None,
+        play_log: list[PlayLogEntry] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -2495,6 +2496,8 @@ class StreamsAudio:
         :param consumer_connected: Reports whether the consumer of this stream is still
             connected; once it reports False, the stream ends before its next item and
             does not report the queue completed.
+        :param play_log: Play log of the session's earlier streams to carry on, for a
+            player that reconnects to the session.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -2538,7 +2541,7 @@ class StreamsAudio:
         # probe the audio. Append to the list published here rather than to whatever the
         # queue currently holds, so the entries of a producer that has since been replaced
         # end up in a list nobody reads instead of interleaving with the live one's.
-        flow_log: list[PlayLogEntry] = []
+        flow_log: list[PlayLogEntry] = list(play_log or [])
         pq_data.flow_mode_stream_log = flow_log
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
@@ -2575,6 +2578,10 @@ class StreamsAudio:
             return pq_data.session_id != flow_session_id
 
         queue_exhausted = False
+        # the item being streamed and how much of it went out, for a stream that is closed
+        # halfway through it
+        play_log_entry: PlayLogEntry | None = None
+        bytes_written = 0
         incoming_prefetcher = _IncomingFadePrefetcher(self, pcm_format, flow_session_id)
         try:
             while True:
@@ -3188,6 +3195,10 @@ class StreamsAudio:
                     queue.display_name,
                 )
         finally:
+            if play_log_entry is not None and play_log_entry.seconds_streamed is None:
+                # closed halfway through the item: record how far it got, which is where
+                # a player that reconnects continues
+                play_log_entry.seconds_streamed = bytes_written / pcm_sample_size
             await incoming_prefetcher.close()
         #### HANDLE END OF QUEUE FLOW STREAM
         # skip end-of-queue bookkeeping if a newer producer has superseded us;

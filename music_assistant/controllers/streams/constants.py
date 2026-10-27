@@ -137,6 +137,16 @@ def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[s
 # the webserver shutdown timeout so a lead-out never stalls a restart of the server.
 FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
 
+# A player that reconnects to its flow stream continues where the previous stream got to.
+# Some players hang up on purpose: a Samsung soundbar's Cast receiver drops the connection
+# after every ~10 MB it has buffered and asks again for what follows. The flow stream can't
+# serve that byte range, but it can seek the item it was streaming. Below this many seconds
+# the previous stream was a probe (some players open the url twice to look at the audio),
+# and the item starts over as before.
+FLOW_STREAM_RESUME_MIN_SECONDS: Final[int] = 10
+# How long a reconnect waits for the stream it replaces to finish tearing down.
+FLOW_STREAM_RESUME_WAIT_SECONDS: Final[float] = 2.0
+
 
 # Configuration keys
 CONF_BUFFER_SIZE: Final[str] = "buffer_size"
