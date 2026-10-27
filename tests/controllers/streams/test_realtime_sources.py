@@ -2157,6 +2157,7 @@ def _single_item_handler(
     controller.audio = audio
     controller._open_item_streams = {}
     controller._ended_item_streams = {}
+    controller._flow_streams = {}
     controller.logger = MagicMock()
     controller._log_request = MagicMock()
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.SMART_CROSSFADE)
@@ -2331,6 +2332,7 @@ def _flow_handler(
     controller._log_request = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._open_item_streams = {}
+    controller._flow_streams = {}
     controller._active_output_streams = 0
     controller._flow_mode_owners = {}
     controller._boundary_mix_owners = {}
@@ -2348,6 +2350,7 @@ def _flow_handler(
     request = MagicMock()
     request.method = "GET"
     request.headers = {}
+    request.http_range = slice(None, None)
     request.match_info = {
         "queue_id": "queue-1",
         "player_id": "player-1",

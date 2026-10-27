@@ -136,6 +136,17 @@ def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[s
 # Holding the (idle) connection open gives them time to play it out first. Kept below
 # the webserver shutdown timeout so a lead-out never stalls a restart of the server.
 FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
+# A player that hangs up on its flow stream may ask again for the bytes that follow what
+# it got: a Samsung soundbar's Cast receiver drops the connection after every ~10 MB it
+# has buffered and asks for the rest with a byte range. The stream it left is held this
+# long, still running, to be continued from that byte.
+FLOW_STREAM_HOLD_SECONDS: Final[float] = 10.0
+# How much of what a flow stream sent last is kept to continue it from: what the player
+# didn't get yet sits in the socket buffers, a few MB at most.
+FLOW_STREAM_HOLD_BYTES: Final[int] = 8 * 1024 * 1024
+# How long a request for the rest of a flow stream waits for the stream it continues to
+# notice that its player hung up: it only does on its next write.
+FLOW_STREAM_HOLD_WAIT_SECONDS: Final[float] = 3.0
 
 
 # Configuration keys

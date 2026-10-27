@@ -2108,6 +2108,7 @@ def _native_stream_handler_context(
     controller = cast("Any", object.__new__(StreamsController))
     controller._open_item_streams = {}
     controller._ended_item_streams = {}
+    controller._flow_streams = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()
@@ -2126,6 +2127,7 @@ def _native_stream_handler_context(
     request = MagicMock()
     request.method = "GET"
     request.headers = {}
+    request.http_range = slice(None, None)
     request.match_info = {
         "queue_id": "queue-1",
         "session_id": "session-1",
